@@ -240,6 +240,15 @@ def index():
     return 'Ruby is alive 🔴'
 
 
+@app.route('/debug/<user_id>')
+def debug(user_id):
+    try:
+        res = supabase.table('ruby_profile').select('key,value').eq('user_id', user_id).execute()
+        return {'profile': res.data, 'count': len(res.data)}
+    except Exception as e:
+        return {'error': str(e)}
+
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
