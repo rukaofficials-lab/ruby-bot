@@ -142,7 +142,6 @@ def ask_ruby(user_id, user_text):
     history = get_history(user_id)
     history.append({'role': 'user', 'content': user_text})
 
-    # First call — Ruby may use save_fact tool
     response = claude.messages.create(
         model='claude-sonnet-4-6',
         max_tokens=1024,
@@ -151,28 +150,34 @@ def ask_ruby(user_id, user_text):
         tools=RUBY_TOOLS
     )
 
-    # Process tool calls (save_fact)
+    # Convert content blocks to plain dicts + handle tool calls
     tool_used = False
+    tool_results = []
+    assistant_content = []
+
     for block in response.content:
-        if block.type == 'tool_use' and block.name == 'save_fact':
+        if block.type == 'tool_use':
+            tool_used = True
             key = block.input.get('key', '').strip()
             value = block.input.get('value', '').strip()
             if key and value:
                 save_profile(user_id, key, value)
-                tool_used = True
+            tool_results.append({
+                'type': 'tool_result',
+                'tool_use_id': block.id,
+                'content': 'บันทึกแล้ว'
+            })
+            assistant_content.append({
+                'type': 'tool_use',
+                'id': block.id,
+                'name': block.name,
+                'input': block.input
+            })
+        elif block.type == 'text':
+            assistant_content.append({'type': 'text', 'text': block.text})
 
-    # If tool was used, continue to get final text response
     if tool_used:
-        tool_results = []
-        for block in response.content:
-            if block.type == 'tool_use':
-                tool_results.append({
-                    'type': 'tool_result',
-                    'tool_use_id': block.id,
-                    'content': 'บันทึกแล้ว'
-                })
-
-        history.append({'role': 'assistant', 'content': response.content})
+        history.append({'role': 'assistant', 'content': assistant_content})
         history.append({'role': 'user', 'content': tool_results})
 
         response = claude.messages.create(
@@ -183,7 +188,6 @@ def ask_ruby(user_id, user_text):
             tools=RUBY_TOOLS
         )
 
-    # Extract final text
     reply = ''
     for block in response.content:
         if hasattr(block, 'text'):
@@ -207,8 +211,11 @@ def webhook():
 
 
 def process_text(user_id, user_text):
-    reply = ask_ruby(user_id, user_text)
-    line_bot_api.push_message(user_id, TextSendMessage(text=reply))
+    try:
+        reply = ask_ruby(user_id, user_text)
+        line_bot_api.push_message(user_id, TextSendMessage(text=reply))
+    except Exception as e:
+        line_bot_api.push_message(user_id, TextSendMessage(text=f'[ERROR] {str(e)}'))
 
 
 def process_audio(user_id, message_id):
