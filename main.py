@@ -137,6 +137,31 @@ def build_system(user_id):
     return system
 
 
+EXTRACT_SYSTEM = """คุณคือระบบ extract ข้อมูล ดูบทสนทนาแล้วหาข้อมูลส่วนตัวที่บอสบอกเกี่ยวกับตัวเอง
+ถ้ามีข้อมูลใหม่ ตอบ JSON format: [{"key": "หัวข้อ", "value": "ข้อมูล"}]
+ถ้าไม่มีข้อมูลใหม่ ตอบ: []
+ข้อมูลที่ควรเก็บ: ชื่อ แฟน ครอบครัว งาน ที่อยู่ ความชอบ ติ่ง เป้าหมาย นิสัย สุขภาพ
+อย่าเก็บข้อมูลที่ไม่เกี่ยวกับบอสโดยตรง"""
+
+
+def extract_and_save(user_id, user_text, assistant_reply):
+    try:
+        resp = claude.messages.create(
+            model='claude-haiku-4-5-20251001',
+            max_tokens=256,
+            system=EXTRACT_SYSTEM,
+            messages=[{'role': 'user', 'content': f'บอส: {user_text}\nรูบี้: {assistant_reply}'}]
+        )
+        text = resp.content[0].text.strip()
+        if text and text != '[]':
+            facts = json.loads(text)
+            for f in facts:
+                if f.get('key') and f.get('value'):
+                    save_profile(user_id, f['key'], f['value'])
+    except Exception:
+        pass
+
+
 def ask_ruby(user_id, user_text):
     system = build_system(user_id)
     history = get_history(user_id)
@@ -146,56 +171,16 @@ def ask_ruby(user_id, user_text):
         model='claude-sonnet-4-6',
         max_tokens=1024,
         system=system,
-        messages=history,
-        tools=RUBY_TOOLS
+        messages=history
     )
 
-    # Convert content blocks to plain dicts + handle tool calls
-    tool_used = False
-    tool_results = []
-    assistant_content = []
-
-    for block in response.content:
-        if block.type == 'tool_use':
-            tool_used = True
-            key = block.input.get('key', '').strip()
-            value = block.input.get('value', '').strip()
-            if key and value:
-                save_profile(user_id, key, value)
-            tool_results.append({
-                'type': 'tool_result',
-                'tool_use_id': block.id,
-                'content': 'บันทึกแล้ว'
-            })
-            assistant_content.append({
-                'type': 'tool_use',
-                'id': block.id,
-                'name': block.name,
-                'input': block.input
-            })
-        elif block.type == 'text':
-            assistant_content.append({'type': 'text', 'text': block.text})
-
-    if tool_used:
-        history.append({'role': 'assistant', 'content': assistant_content})
-        history.append({'role': 'user', 'content': tool_results})
-
-        response = claude.messages.create(
-            model='claude-sonnet-4-6',
-            max_tokens=1024,
-            system=system,
-            messages=history,
-            tools=RUBY_TOOLS
-        )
-
-    reply = ''
-    for block in response.content:
-        if hasattr(block, 'text'):
-            reply += block.text
-
-    reply = reply.strip()
+    reply = response.content[0].text.strip()
     save_memory(user_id, 'user', user_text)
     save_memory(user_id, 'assistant', reply)
+
+    # Extract facts in background (non-blocking)
+    threading.Thread(target=extract_and_save, args=(user_id, user_text, reply)).start()
+
     return reply
 
 
