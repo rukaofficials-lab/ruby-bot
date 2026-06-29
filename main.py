@@ -249,6 +249,29 @@ def debug(user_id):
         return {'error': str(e)}
 
 
+@app.route('/cron')
+def cron():
+    secret = os.environ.get('CRON_SECRET', '')
+    if request.args.get('secret') != secret:
+        abort(403)
+    now = datetime.now(BKK)
+    h, m = now.hour, now.minute
+    try:
+        res = (supabase.table('ruby_reminders')
+               .select('user_id,message')
+               .eq('hour', h)
+               .eq('minute', m)
+               .eq('enabled', True)
+               .execute())
+        sent = 0
+        for row in res.data:
+            line_bot_api.push_message(row['user_id'], TextSendMessage(text=row['message']))
+            sent += 1
+        return {'sent': sent, 'time': f'{h:02d}:{m:02d}'}
+    except Exception as e:
+        return {'error': str(e)}
+
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
