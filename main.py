@@ -2,6 +2,7 @@ import os
 import re
 import json
 import tempfile
+import threading
 import requests
 from datetime import datetime
 import pytz
@@ -205,17 +206,13 @@ def webhook():
     return 'OK'
 
 
-@handler.add(MessageEvent, message=TextMessage)
-def handle_text(event):
-    user_id = event.source.user_id
-    reply = ask_ruby(user_id, event.message.text)
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+def process_text(user_id, user_text):
+    reply = ask_ruby(user_id, user_text)
+    line_bot_api.push_message(user_id, TextSendMessage(text=reply))
 
 
-@handler.add(MessageEvent, message=AudioMessage)
-def handle_audio(event):
-    user_id = event.source.user_id
-    message_content = line_bot_api.get_message_content(event.message.id)
+def process_audio(user_id, message_id):
+    message_content = line_bot_api.get_message_content(message_id)
     with tempfile.NamedTemporaryFile(suffix='.m4a', delete=False) as f:
         for chunk in message_content.iter_content():
             f.write(chunk)
@@ -229,7 +226,21 @@ def handle_audio(event):
     os.unlink(tmp_path)
     user_text = transcript.text
     reply = ask_ruby(user_id, user_text)
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f'🎤 "{user_text}"\n\n{reply}'))
+    line_bot_api.push_message(user_id, TextSendMessage(text=f'🎤 "{user_text}"\n\n{reply}'))
+
+
+@handler.add(MessageEvent, message=TextMessage)
+def handle_text(event):
+    user_id = event.source.user_id
+    user_text = event.message.text
+    threading.Thread(target=process_text, args=(user_id, user_text)).start()
+
+
+@handler.add(MessageEvent, message=AudioMessage)
+def handle_audio(event):
+    user_id = event.source.user_id
+    message_id = event.message.id
+    threading.Thread(target=process_audio, args=(user_id, message_id)).start()
 
 
 @app.route('/')
