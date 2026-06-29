@@ -149,33 +149,15 @@ EXTRACT_SYSTEM = """คุณคือระบบ extract ข้อมูลจ
 
 ดูบทสนทนาแล้วหา:
 1. ข้อมูลส่วนตัวของบอส (ชื่อ แฟน ครอบครัว งาน ความชอบ ติ่ง เป้าหมาย นิสัย สุขภาพ)
-2. การขอให้เตือน/แจ้งเตือนตามเวลา
+2. การขอให้เตือน/แจ้งเตือนตามเวลา — แปลงเวลาเป็น HH:MM (24 ชั่วโมง, timezone Bangkok) และระบุวันที่เป็น YYYY-MM-DD
 
-ตอบในรูปแบบ:
+ตอบในรูปแบบนี้เท่านั้น:
 {
   "facts": [{"key": "หัวข้อ", "value": "ข้อมูล"}],
-  "reminders": [{"time_th": "เวลาภาษาไทย เช่น วันนี้ 4 ทุ่ม", "message": "ข้อความเตือน"}]
+  "reminders": [{"date": "YYYY-MM-DD", "time": "HH:MM", "message": "ข้อความเตือน"}]
 }
 
-ถ้าไม่มีก็ใส่ array ว่าง [] ตอบ JSON เท่านั้น"""
-
-
-def parse_thai_time(time_th, now):
-    """ให้ Claude แปลงเวลาไทยเป็น ISO timestamp"""
-    try:
-        resp = claude.messages.create(
-            model='claude-haiku-4-5-20251001',
-            max_tokens=64,
-            system='แปลงเวลาไทยเป็น ISO 8601 timezone Asia/Bangkok ตอบแค่ตัวเลข เช่น 2026-06-29T22:00:00+07:00 ห้ามมีข้อความอื่น',
-            messages=[{'role': 'user', 'content': f'ตอนนี้คือ {now.strftime("%Y-%m-%dT%H:%M:%S+07:00")} เวลาที่ต้องการ: {time_th}'}]
-        )
-        ts_str = resp.content[0].text.strip()
-        from datetime import timezone, timedelta
-        TZ7 = timezone(timedelta(hours=7))
-        from dateutil.parser import parse as dtparse
-        return dtparse(ts_str).astimezone(TZ7)
-    except Exception:
-        return None
+ถ้าไม่มีก็ใส่ array ว่าง [] ตอบ JSON เท่านั้น ห้ามมีข้อความอื่น"""
 
 
 def save_reminder(user_id, remind_at, message):
@@ -195,22 +177,31 @@ def save_reminder(user_id, remind_at, message):
 
 def extract_and_save(user_id, user_text, assistant_reply):
     try:
+        from datetime import timedelta
         now = datetime.now(BKK)
         resp = claude.messages.create(
             model='claude-haiku-4-5-20251001',
             max_tokens=512,
             system=EXTRACT_SYSTEM,
-            messages=[{'role': 'user', 'content': f'ตอนนี้: {now.strftime("%Y-%m-%d %H:%M")}\nบอส: {user_text}\nรูบี้: {assistant_reply}'}]
+            messages=[{'role': 'user', 'content': f'ตอนนี้: {now.strftime("%Y-%m-%d %H:%M")} (Bangkok)\nบอส: {user_text}\nรูบี้: {assistant_reply}'}]
         )
-        data = json.loads(resp.content[0].text.strip())
+        text = resp.content[0].text.strip()
+        # strip markdown code blocks if any
+        if text.startswith('```'):
+            text = re.sub(r'```[^\n]*\n?', '', text).strip()
+        data = json.loads(text)
         for f in data.get('facts', []):
             if f.get('key') and f.get('value'):
                 save_profile(user_id, f['key'], f['value'])
         for r in data.get('reminders', []):
-            if r.get('time_th') and r.get('message'):
-                remind_at = parse_thai_time(r['time_th'], now)
-                if remind_at:
-                    save_reminder(user_id, remind_at, r['message'])
+            date_str = r.get('date', now.strftime('%Y-%m-%d'))
+            time_str = r.get('time', '')
+            if time_str:
+                h, m = map(int, time_str.split(':'))
+                remind_at = BKK.localize(
+                    datetime.strptime(f'{date_str} {h:02d}:{m:02d}', '%Y-%m-%d %H:%M')
+                )
+                save_reminder(user_id, remind_at, r['message'])
     except Exception:
         pass
 
