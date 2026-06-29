@@ -323,12 +323,15 @@ def cron():
             line_bot_api.push_message(row['user_id'], TextSendMessage(text=row['message']))
             sent += 1
         # One-time reminders — find those within current minute window
-        now_iso = now.strftime('%Y-%m-%dT%H:%M')
+        from datetime import timedelta
+        window_start = now.replace(second=0, microsecond=0)
+        window_end = window_start + timedelta(minutes=1)
         res2 = (supabase.table('ruby_reminders')
                 .select('id,user_id,message')
                 .eq('enabled', True)
                 .eq('fired', False)
-                .like('remind_at', f'{now_iso}%')
+                .gte('remind_at', window_start.isoformat())
+                .lt('remind_at', window_end.isoformat())
                 .execute())
         for row in res2.data:
             line_bot_api.push_message(row['user_id'], TextSendMessage(text=row['message']))
