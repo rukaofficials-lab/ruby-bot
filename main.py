@@ -295,8 +295,9 @@ def index():
 @app.route('/debug/<user_id>')
 def debug(user_id):
     try:
-        res = supabase.table('ruby_profile').select('key,value').eq('user_id', user_id).execute()
-        return {'profile': res.data, 'count': len(res.data)}
+        profile = supabase.table('ruby_profile').select('key,value').eq('user_id', user_id).execute()
+        reminders = supabase.table('ruby_reminders').select('hour,minute,message,remind_at,fired,enabled').eq('user_id', user_id).execute()
+        return {'profile': profile.data, 'reminders': reminders.data}
     except Exception as e:
         return {'error': str(e)}
 
