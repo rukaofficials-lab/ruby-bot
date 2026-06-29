@@ -176,8 +176,8 @@ def save_reminder(user_id, remind_at, message):
 
 
 def extract_and_save(user_id, user_text, assistant_reply):
+    last_error = None
     try:
-        from datetime import timedelta
         now = datetime.now(BKK)
         resp = claude.messages.create(
             model='claude-haiku-4-5-20251001',
@@ -186,7 +186,6 @@ def extract_and_save(user_id, user_text, assistant_reply):
             messages=[{'role': 'user', 'content': f'ตอนนี้: {now.strftime("%Y-%m-%d %H:%M")} (Bangkok)\nบอส: {user_text}\nรูบี้: {assistant_reply}'}]
         )
         text = resp.content[0].text.strip()
-        # strip markdown code blocks if any
         if text.startswith('```'):
             text = re.sub(r'```[^\n]*\n?', '', text).strip()
         data = json.loads(text)
@@ -202,8 +201,28 @@ def extract_and_save(user_id, user_text, assistant_reply):
                     datetime.strptime(f'{date_str} {h:02d}:{m:02d}', '%Y-%m-%d %H:%M')
                 )
                 save_reminder(user_id, remind_at, r['message'])
-    except Exception:
-        pass
+    except Exception as e:
+        print(f'[extract_and_save ERROR] {e}')
+
+
+@app.route('/test-extract/<user_id>')
+def test_extract(user_id):
+    try:
+        now = datetime.now(BKK)
+        user_text = request.args.get('msg', 'อีก 5 นาที เตือนให้ดื่มน้ำ')
+        resp = claude.messages.create(
+            model='claude-haiku-4-5-20251001',
+            max_tokens=512,
+            system=EXTRACT_SYSTEM,
+            messages=[{'role': 'user', 'content': f'ตอนนี้: {now.strftime("%Y-%m-%d %H:%M")} (Bangkok)\nบอส: {user_text}\nรูบี้: โอเค จำไว้แล้ว'}]
+        )
+        text = resp.content[0].text.strip()
+        if text.startswith('```'):
+            text = re.sub(r'```[^\n]*\n?', '', text).strip()
+        data = json.loads(text)
+        return {'raw': text, 'parsed': data, 'now': now.strftime('%Y-%m-%d %H:%M')}
+    except Exception as e:
+        return {'error': str(e)}
 
 
 def ask_ruby(user_id, user_text):
