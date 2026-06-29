@@ -137,27 +137,72 @@ def build_system(user_id):
     return system
 
 
-EXTRACT_SYSTEM = """คุณคือระบบ extract ข้อมูล ดูบทสนทนาแล้วหาข้อมูลส่วนตัวที่บอสบอกเกี่ยวกับตัวเอง
-ถ้ามีข้อมูลใหม่ ตอบ JSON format: [{"key": "หัวข้อ", "value": "ข้อมูล"}]
-ถ้าไม่มีข้อมูลใหม่ ตอบ: []
-ข้อมูลที่ควรเก็บ: ชื่อ แฟน ครอบครัว งาน ที่อยู่ ความชอบ ติ่ง เป้าหมาย นิสัย สุขภาพ
-อย่าเก็บข้อมูลที่ไม่เกี่ยวกับบอสโดยตรง"""
+EXTRACT_SYSTEM = """คุณคือระบบ extract ข้อมูลจากบทสนทนา ตอบ JSON เท่านั้น ห้ามมีข้อความอื่น
+
+ดูบทสนทนาแล้วหา:
+1. ข้อมูลส่วนตัวของบอส (ชื่อ แฟน ครอบครัว งาน ความชอบ ติ่ง เป้าหมาย นิสัย สุขภาพ)
+2. การขอให้เตือน/แจ้งเตือนตามเวลา
+
+ตอบในรูปแบบ:
+{
+  "facts": [{"key": "หัวข้อ", "value": "ข้อมูล"}],
+  "reminders": [{"time_th": "เวลาภาษาไทย เช่น วันนี้ 4 ทุ่ม", "message": "ข้อความเตือน"}]
+}
+
+ถ้าไม่มีก็ใส่ array ว่าง [] ตอบ JSON เท่านั้น"""
+
+
+def parse_thai_time(time_th, now):
+    """ให้ Claude แปลงเวลาไทยเป็น ISO timestamp"""
+    try:
+        resp = claude.messages.create(
+            model='claude-haiku-4-5-20251001',
+            max_tokens=64,
+            system='แปลงเวลาไทยเป็น ISO 8601 timezone Asia/Bangkok ตอบแค่ตัวเลข เช่น 2026-06-29T22:00:00+07:00 ห้ามมีข้อความอื่น',
+            messages=[{'role': 'user', 'content': f'ตอนนี้คือ {now.strftime("%Y-%m-%dT%H:%M:%S+07:00")} เวลาที่ต้องการ: {time_th}'}]
+        )
+        ts_str = resp.content[0].text.strip()
+        from datetime import timezone, timedelta
+        TZ7 = timezone(timedelta(hours=7))
+        from dateutil.parser import parse as dtparse
+        return dtparse(ts_str).astimezone(TZ7)
+    except Exception:
+        return None
+
+
+def save_reminder(user_id, remind_at, message):
+    try:
+        supabase.table('ruby_reminders').insert({
+            'user_id': user_id,
+            'hour': remind_at.hour,
+            'minute': remind_at.minute,
+            'message': message,
+            'remind_at': remind_at.isoformat(),
+            'enabled': True,
+            'fired': False
+        }).execute()
+    except Exception:
+        pass
 
 
 def extract_and_save(user_id, user_text, assistant_reply):
     try:
+        now = datetime.now(BKK)
         resp = claude.messages.create(
             model='claude-haiku-4-5-20251001',
-            max_tokens=256,
+            max_tokens=512,
             system=EXTRACT_SYSTEM,
-            messages=[{'role': 'user', 'content': f'บอส: {user_text}\nรูบี้: {assistant_reply}'}]
+            messages=[{'role': 'user', 'content': f'ตอนนี้: {now.strftime("%Y-%m-%d %H:%M")}\nบอส: {user_text}\nรูบี้: {assistant_reply}'}]
         )
-        text = resp.content[0].text.strip()
-        if text and text != '[]':
-            facts = json.loads(text)
-            for f in facts:
-                if f.get('key') and f.get('value'):
-                    save_profile(user_id, f['key'], f['value'])
+        data = json.loads(resp.content[0].text.strip())
+        for f in data.get('facts', []):
+            if f.get('key') and f.get('value'):
+                save_profile(user_id, f['key'], f['value'])
+        for r in data.get('reminders', []):
+            if r.get('time_th') and r.get('message'):
+                remind_at = parse_thai_time(r['time_th'], now)
+                if remind_at:
+                    save_reminder(user_id, remind_at, r['message'])
     except Exception:
         pass
 
@@ -257,15 +302,28 @@ def cron():
     now = datetime.now(BKK)
     h, m = now.hour, now.minute
     try:
+        sent = 0
+        # Recurring reminders (hour + minute, no remind_at)
         res = (supabase.table('ruby_reminders')
                .select('user_id,message')
-               .eq('hour', h)
-               .eq('minute', m)
+               .eq('hour', h).eq('minute', m)
                .eq('enabled', True)
+               .is_('remind_at', 'null')
                .execute())
-        sent = 0
         for row in res.data:
             line_bot_api.push_message(row['user_id'], TextSendMessage(text=row['message']))
+            sent += 1
+        # One-time reminders — find those within current minute window
+        now_iso = now.strftime('%Y-%m-%dT%H:%M')
+        res2 = (supabase.table('ruby_reminders')
+                .select('id,user_id,message')
+                .eq('enabled', True)
+                .eq('fired', False)
+                .like('remind_at', f'{now_iso}%')
+                .execute())
+        for row in res2.data:
+            line_bot_api.push_message(row['user_id'], TextSendMessage(text=row['message']))
+            supabase.table('ruby_reminders').update({'fired': True}).eq('id', row['id']).execute()
             sent += 1
         return {'sent': sent, 'time': f'{h:02d}:{m:02d}'}
     except Exception as e:
